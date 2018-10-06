@@ -1,4 +1,5 @@
 {-# LANGUAGE TypeOperators, ScopedTypeVariables, GADTs, KindSignatures, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, TypeFamilies, ViewPatterns, DataKinds, ConstraintKinds, UndecidableInstances, RankNTypes, InstanceSigs, PolyKinds, TypeApplications #-}
+
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.OpenRecords
@@ -6,17 +7,17 @@
 -- License     :  BSD-style
 -- Maintainer  :  atzeus@gmail.org
 -- Stability   :  expirimental
--- 
+--
 -- This module implements extensible records using closed type famillies.
 --
 -- See Examples.hs for examples.
--- 
+--
 -- Lists of (label,type) pairs are kept sorted thereby ensuring
 -- that { x = 0, y = 0 } and { y = 0, x = 0 } have the same type.
--- 
+--
 -- In this way we can implement standard type classes such as Show, Eq, Ord and Bounded
 -- for open records, given that all the elements of the open record satify the constraint.
--- 
+--
 -----------------------------------------------------------------------------
 
 
@@ -26,7 +27,7 @@ module Data.OpenRecords
              -- * Types and constraints
              Label(..),
              KnownSymbol(..),
-             Rec,   Row,
+             Rec,   Row(..),
              -- * Construction
              empty,Empty ,
              -- ** Extension
@@ -34,7 +35,7 @@ module Data.OpenRecords
              -- ** Renaming
              rename, renameUnique, Rename,
              -- ** Restriction
-             (.-), (:-), 
+             (.-), (:-),
              Restrict(..),
              -- ** Update
              update,
@@ -44,7 +45,7 @@ module Data.OpenRecords
              focus, Modify,
              -- * Combine
              -- ** Union
-              (.++), (:++),
+              (.++), (:++), Merge,
              -- ** Disjoint union
               (.+) , (:+),
              -- * Row constraints
@@ -53,12 +54,12 @@ module Data.OpenRecords
              -- * Syntactic sugar
              RecOp(..), RowOp(..), (.|), (:|),
              -- * Labels
-             labels
+             labels, LT(..)
 
 
 
-           
-     ) 
+
+     )
 where
 
 import Data.Functor.Const
@@ -76,15 +77,20 @@ import Data.Proxy
 import Data.Type.Equality (type (==))
 import Unconstrained
 
+-- @br-gaster
+import GHC.OverloadedLabels
 
--- | A label 
+
+-- | A label
 data Label (s :: Symbol) = Label
 
 instance KnownSymbol s => Show (Label s) where
   show = symbolVal
 
 
-
+-- @br-gaster
+instance l ~ l' => IsLabel (l :: Symbol) (Label l') where
+  fromLabel = Label
 
 {--------------------------------------------------------------------
   Row constraints
@@ -114,7 +120,7 @@ data HideType where
 data Rec (r :: Row *) where
   OR :: HashMap String (Seq HideType) -> Rec r
 
--- | The kind of rows. This type is only used as a datakind. A row is a typelevel entity telling us 
+-- | The kind of rows. This type is only used as a datakind. A row is a typelevel entity telling us
 --   which symbols are associated with which types.
 newtype Row a = R [LT a] -- constructor not exported
 
@@ -131,15 +137,15 @@ type family Empty :: Row * where
 --------------------------------------------------------------------}
 
 
--- | Record extension. The row may already contain the label, 
+-- | Record extension. The row may already contain the label,
 --   in which case the origin value can be obtained after restriction ('.-') with
 --   the label.
-extend :: KnownSymbol l => Label l -> a -> Rec r -> Rec (Extend l a r)  
-extend (show -> l) a (OR m) = OR $ M.insert l v m 
+extend :: KnownSymbol l => Label l -> a -> Rec r -> Rec (Extend l a r)
+extend (show -> l) a (OR m) = OR $ M.insert l v m
    where v = HideType a <| M.lookupDefault S.empty l m
 
 -- | Record extension without shadowing. The row may not already contain label l.
-extendUnique :: (KnownSymbol l,r :\ l) => Label l -> a -> Rec r -> Rec (Extend l a r)   
+extendUnique :: (KnownSymbol l,r :\ l) => Label l -> a -> Rec r -> Rec (Extend l a r)
 extendUnique = extend
 
 -- | Type level operations of 'extend' and 'extendUnique'
@@ -148,7 +154,7 @@ type family Extend (l :: Symbol) (a :: *) (r :: Row *) :: Row * where
 
 -- | Update the value associated with the label.
 update :: KnownSymbol l => Label l -> r :! l -> Rec r -> Rec r
-update (show -> l) a (OR m) = OR $ M.adjust f l m where f = S.update 0 (HideType a)  
+update (show -> l) a (OR m) = OR $ M.adjust f l m where f = S.update 0 (HideType a)
 
 type family Modify (l :: Symbol) (a :: *) (r :: Row *) :: Row * where
   Modify l a (R ρ) = R (ModifyR l a ρ)
@@ -161,7 +167,7 @@ type family ModifyR (l :: Symbol) (a :: *) (ρ :: [LT *]) :: [LT *] where
 focus :: (Functor f, KnownSymbol l) => Label l -> (r :! l -> f a) -> Rec r -> f (Rec (Modify l a r))
 focus (show -> l) f r@(OR m) = case S.viewl (m M.! l) of HideType x :< v -> OR . flip (M.insert l) m . (<| v) . HideType <$> f (unsafeCoerce x)
 
--- | Rename a label. The row may already contain the new label , 
+-- | Rename a label. The row may already contain the new label ,
 --   in which case the origin value can be obtained after restriction ('.-') with
 --   the new label.
 rename :: (KnownSymbol l, KnownSymbol l') => Label l -> Label l' -> Rec r -> Rec (Rename l l' r)
@@ -179,9 +185,9 @@ infix  8 .-
 -- | Record selection
 (.!) :: KnownSymbol l => Rec r -> Label l -> r :! l
 OR m .! (show -> a) = x'
-   where x S.:< t =  S.viewl $ m M.! a 
+   where x S.:< t =  S.viewl $ m M.! a
          -- notice that this is safe because of the external type
-         x' = case x of HideType p -> unsafeCoerce p 
+         x' = case x of HideType p -> unsafeCoerce p
 
 
 
@@ -193,7 +199,7 @@ type family (r :: Row *) :! (t :: Symbol) :: * where
 -- | Record restriction. Delete the label l from the record.
 (.-) :: KnownSymbol l =>  Rec r -> Label l -> Rec (r :- l)
 OR m .- (show -> a) = OR m'
-   where x S.:< t =  S.viewl $ m M.! a 
+   where x S.:< t =  S.viewl $ m M.! a
          m' = case S.viewl t of
                EmptyL -> M.delete a m
                _      -> M.insert a t m
@@ -243,7 +249,7 @@ instance (r :\ l) => Lacks l r
 
 -- | Alias for @(r :! l) ~ a@. It is a class rather than an alias, so that
 --   it can be partially appliced.
-class ((r :! l) ~ a ) => HasType l a r 
+class ((r :! l) ~ a ) => HasType l a r
 instance ((r :! l) ~ a ) => HasType l a r
 
 
@@ -253,21 +259,21 @@ infix 5 :<-
 
 -- | Here we provide a datatype for denoting record operations. Use '.|' to
 --   actually apply the operations.
--- 
+--
 --   This allows us to chain operations with nicer syntax.
 --   For example we can write:
 --
 -- > p :<-| z .| y :<- 'b' .| z :!= False .| x := 2 .| y := 'a' .| empty
--- 
+--
 -- Which results in:
--- 
+--
 -- > { p=False, x=2, y='b' }
--- 
+--
 -- Without this sugar, we would have written it like this:
 --
 -- >  rename z p $ update y 'b' $ extendUnique z False $ extend x 2 $ extend y 'a' empty
 --
--- 
+--
 --  [@:<-@] Record update. Sugar for 'update'.
 --
 --  [@:=@] Record extension. Sugar for 'extend'.
@@ -279,8 +285,8 @@ infix 5 :<-
 --  [@:<-!@] Record label renaming. Sugar for 'renameUnique'.
 data RecOp (c :: Row * -> Constraint) (rowOp :: RowOp *) where
   (:<-)  :: KnownSymbol l           => Label l -> a      -> RecOp (HasType l a) RUp
-  (:=)   :: KnownSymbol l           => Label l -> a      -> RecOp Unconstrained1 (l ::= a)  
-  (:!=)  :: KnownSymbol l => Label l -> a      -> RecOp (Lacks l) (l ::= a)  
+  (:=)   :: KnownSymbol l           => Label l -> a      -> RecOp Unconstrained1 (l ::= a)
+  (:!=)  :: KnownSymbol l => Label l -> a      -> RecOp (Lacks l) (l ::= a)
   (:<-|) :: (KnownSymbol l, KnownSymbol l') => Label l' -> Label l -> RecOp Unconstrained1 (l' ::<-| l)
   (:<-!) :: (KnownSymbol l, KnownSymbol l', r :\ l') => Label l' -> Label l -> RecOp (Lacks l') (l' ::<-| l)
 
@@ -289,16 +295,16 @@ data RecOp (c :: Row * -> Constraint) (rowOp :: RowOp *) where
 -- | Type level datakind corresponding to 'RecOp'.
 --   Here we provide a datatype for denoting row operations. Use ':|' to
 --   actually apply the type level operation.
--- 
+--
 --   This allows us to chain type level operations with nicer syntax.
 --   For example we can write:
 --
 -- > "p" ::<-| "z" :| RUp :| "z" ::= Bool :| "x" ::= Double :| "y" ::= Char :| Empty
--- 
+--
 -- As the type of the expression:
 --
 -- > p :<-| z .| y :<- 'b' .| z :!= False .| x := 2 .| y := 'a' .| empty
--- 
+--
 -- Without this sugar, we would have written it like this:
 --
 -- >  Rename "p" "z" (Extend "z" Bool (Extend x Double (Extend "x" Int Empty)))
@@ -449,7 +455,7 @@ show' = fromString . show
 class RowZip (r1 :: Row *) (r2 :: Row *) where
   type RZip r1 r2 :: Row *
   rzip :: Rec r1 -> Rec r2 -> Rec (RZip r1 r2)
-  
+
 instance RZipt r1 r2 => RowZip (R r1) (R r2) where
   type RZip (R r1) (R r2) = R (RZipp r1 r2)
   rzip = rzip'
@@ -462,7 +468,7 @@ instance RZipt '[] '[] where
   type RZipp '[] '[] = '[]
   rzip' _ _ = empty
 
-instance (KnownSymbol l, RZipt t1 t2) => 
+instance (KnownSymbol l, RZipt t1 t2) =>
    RZipt (l :-> v1 ': t1) (l :-> v2 ': t2) where
 
    type RZipp (l :-> v1 ': t1) (l :-> v2 ': t2) = l :-> (v1,v2) ': RZipp t1 t2
@@ -503,7 +509,7 @@ data Unique = LabelUnique Symbol | LabelNotUnique Symbol
 
 type family Inject (l :: LT *) (r :: [LT *]) where
   Inject (l :-> t) '[] = (l :-> t ': '[])
-  Inject (l :-> t) (l' :-> t' ': x) = 
+  Inject (l :-> t) (l' :-> t' ': x) =
       Ifte (l <=.? l')
       (l :-> t   ': l' :-> t' ': x)
       (l' :-> t' ': Inject (l :-> t)  x)
@@ -512,7 +518,7 @@ type family Ifte (c :: Bool) (t :: [LT *]) (f :: [LT *])   where
   Ifte True  t f = t
   Ifte False t f = f
 
-data NoSuchField (s :: Symbol) 
+data NoSuchField (s :: Symbol)
 
 type family Get (l :: Symbol) (r :: [LT *]) where
   Get l '[] = NoSuchField l
@@ -534,7 +540,7 @@ type family LacksR (l :: Symbol) (r :: [LT *]) where
 type family Merge (l :: [LT *]) (r :: [LT *]) where
   Merge '[] r = r
   Merge l '[] = l
-  Merge (hl :-> al ': tl) (hr :-> ar ': tr) = 
+  Merge (hl :-> al ': tl) (hr :-> ar ': tr) =
       Ifte (hl <=.? hr)
       (hl :-> al ': Merge tl (hr :-> ar ': tr))
       (hr :-> ar ': Merge (hl :-> al ': tl) tr)
@@ -553,7 +559,7 @@ type family DisjointZ (l :: [LT *]) (r :: [LT *]) where
     DisjointZ '[] r = IsDisjoint
     DisjointZ l '[] = IsDisjoint
     DisjointZ (l :-> al ': tl) (l :-> ar ': tr) = Duplicate l
-    DisjointZ (hl :-> al ': tl) (hr :-> ar ': tr) = 
+    DisjointZ (hl :-> al ': tl) (hr :-> ar ': tr) =
       IfteD (hl <=.? hr)
       (DisjointZ tl (hr :-> ar ': tr))
       (DisjointZ (hl :-> al ': tl) tr)
