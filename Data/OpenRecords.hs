@@ -45,7 +45,7 @@ module Data.OpenRecords
              focus, Modify,
              -- * Combine
              -- ** Union
-              (.++), (:++), Merge,
+              (.++), (:++), Merge, (.+++), (:+++), MergeND,
              -- ** Disjoint union
               (.+) , (:+),
              -- * Row constraints
@@ -217,6 +217,13 @@ OR l .++ OR r = OR $ M.unionWith (><) l r
 -- | Type level operation of '.++'
 type family (l :: Row *) :++  (r :: Row *)  :: Row * where
   R l :++ R r = R (Merge l r)
+
+(.+++) :: Rec l -> Rec r -> Rec (l :+++ r)
+OR l .+++ OR r = OR $ M.unionWith (><) l r
+
+-- | Type level operation of '.++'
+type family (l :: Row *) :+++  (r :: Row *)  :: Row * where
+  R l :+++ R r = R (MergeND l r)
 
 -- | Record disjoint union (commutative)
 (.+) :: Disjoint l r => Rec l -> Rec r -> Rec (l :+ r)
@@ -544,6 +551,15 @@ type family Merge (l :: [LT *]) (r :: [LT *]) where
       Ifte (hl <=.? hr)
       (hl :-> al ': Merge tl (hr :-> ar ': tr))
       (hr :-> ar ': Merge (hl :-> al ': tl) tr)
+
+type family MergeND (l :: [LT *]) (r :: [LT *]) where
+  MergeND '[] r = r
+  MergeND l '[] = l
+  MergeND (l :-> al ': tl) (l :-> ar ': tr) = (l :-> al ': MergeND tl tr)
+  MergeND (hl :-> al ': tl) (hr :-> ar ': tr) =
+      Ifte (hl <=.? hr)
+      (hl :-> al ': MergeND tl (hr :-> ar ': tr))
+      (hr :-> ar ': MergeND (hl :-> al ': tl) tr)
 
 -- gives nicer error message than Bool
 data DisjointErr = IsDisjoint | Duplicate Symbol
